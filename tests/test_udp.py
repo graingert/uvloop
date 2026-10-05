@@ -265,6 +265,12 @@ class _TestUDP:
         # it with EAGAIN), optionally letting the peer make room for it
         # before the loop runs again, and return the protocol events.
         # Any call to the loop's exception handler fails the test.
+        if self.implementation == 'asyncio' and sys.platform == 'darwin':
+            # macOS refuses UNIX datagrams with ENOBUFS rather than
+            # EAGAIN; asyncio reports that to error_received() and drops
+            # the datagram instead of queueing it.
+            raise unittest.SkipTest(
+                'asyncio does not queue datagrams refused with ENOBUFS')
 
         class Proto(asyncio.DatagramProtocol):
             def __init__(self, loop):
@@ -289,10 +295,6 @@ class _TestUDP:
 
         async def run(peer, path):
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
-                # Keep the send buffer small (as anyio's tests do) so that
-                # macOS refuses datagrams with EAGAIN too.
-                sock.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
                 sock.connect(path)
                 sock.setblocking(False)
                 pr = Proto(self.loop)
@@ -466,10 +468,6 @@ class Test_UV_UDP(_TestUDP, tb.UVTestCase):
 
                 with socket.socket(
                         socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
-                    # Keep the send buffer small (as anyio's tests do) so that
-                    # macOS refuses datagrams with EAGAIN too.
-                    sock.setsockopt(
-                        socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
                     sock.connect(path)
                     sock.setblocking(False)
                     tr, _ = self.loop.run_until_complete(
