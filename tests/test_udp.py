@@ -279,27 +279,27 @@ class _TestUDP:
                 self.done.set_result(None)
 
         async def run(peer, path):
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            sock.connect(path)
-            sock.setblocking(False)
-            pr = Proto(self.loop)
-            tr, _ = await self.loop.create_datagram_endpoint(
-                lambda: pr, sock=sock)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+                sock.connect(path)
+                sock.setblocking(False)
+                pr = Proto(self.loop)
+                tr, _ = await self.loop.create_datagram_endpoint(
+                    lambda: pr, sock=sock)
 
-            while not tr.get_write_buffer_size():
-                tr.sendto(b'x' * 64)
+                while not tr.get_write_buffer_size():
+                    tr.sendto(b'x' * 64)
 
-            getattr(tr, method)()
-            pr.events.append(method)
-            if drain:
-                try:
-                    while True:
-                        peer.recv(64)
-                except BlockingIOError:
-                    pass
+                getattr(tr, method)()
+                pr.events.append(method)
+                if drain:
+                    try:
+                        while True:
+                            peer.recv(64)
+                    except BlockingIOError:
+                        pass
 
-            await pr.done
-            return pr.events
+                await pr.done
+                return pr.events
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = os.path.join(tmp_dir, 'peer.sock')
@@ -452,17 +452,18 @@ class Test_UV_UDP(_TestUDP, tb.UVTestCase):
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as peer:
                 peer.bind(path)
 
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                sock.connect(path)
-                sock.setblocking(False)
-                tr, _ = self.loop.run_until_complete(
-                    self.loop.create_datagram_endpoint(Proto, sock=sock))
+                with socket.socket(
+                        socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+                    sock.connect(path)
+                    sock.setblocking(False)
+                    tr, _ = self.loop.run_until_complete(
+                        self.loop.create_datagram_endpoint(Proto, sock=sock))
 
-                while not tr.get_write_buffer_size():
-                    tr.sendto(b'x' * 64)
+                    while not tr.get_write_buffer_size():
+                        tr.sendto(b'x' * 64)
 
-                with self.assertWarnsRegex(ResourceWarning, 'unclosed'):
-                    self.loop.close()
+                    with self.assertWarnsRegex(ResourceWarning, 'unclosed'):
+                        self.loop.close()
 
         self.assertEqual(events, [])
 
