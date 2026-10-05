@@ -251,6 +251,87 @@ class _TestUDP:
 
                 self.assertIn(tmp_file2, pr.addrs)
 
+    def _close_with_queued_datagram(self, method, drain):
+        # Close the transport while a datagram is queued (the OS refused
+        # it with EAGAIN), optionally letting the peer make room for it
+        # before the loop runs again, and return the protocol events.
+        # Any call to the loop's exception handler fails the test.
+
+        class Proto(asyncio.DatagramProtocol):
+            def __init__(self, loop):
+                self.events = []
+                self.done = asyncio.Future(loop=loop)
+
+            def connection_made(self, transport):
+                transport.set_write_buffer_limits(0)
+
+            def pause_writing(self):
+                self.events.append('pause_writing')
+
+            def resume_writing(self):
+                self.events.append('resume_writing')
+
+            def error_received(self, exc):
+                self.events.append(('error_received', exc))
+
+            def connection_lost(self, exc):
+                self.events.append(('connection_lost', exc))
+                self.done.set_result(None)
+
+        async def run(peer, path):
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            sock.connect(path)
+            sock.setblocking(False)
+            pr = Proto(self.loop)
+            tr, _ = await self.loop.create_datagram_endpoint(
+                lambda: pr, sock=sock)
+
+            while not tr.get_write_buffer_size():
+                tr.sendto(b'x' * 64)
+
+            getattr(tr, method)()
+            pr.events.append(method)
+            if drain:
+                try:
+                    while True:
+                        peer.recv(64)
+                except BlockingIOError:
+                    pass
+
+            await pr.done
+            await asyncio.sleep(0.1)
+            return pr.events
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, 'peer.sock')
+            # A UNIX datagram socket is used because UDP over loopback
+            # never refuses a datagram, so the sender's queue never fills.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as peer:
+                peer.bind(path)
+                peer.setblocking(False)
+                return self.loop.run_until_complete(run(peer, path))
+
+    def test_abort_with_queued_datagram(self):
+        # gh-771: the queued datagram is discarded silently.
+        self.assertEqual(
+            self._close_with_queued_datagram('abort', drain=False),
+            ['pause_writing', 'abort', ('connection_lost', None)])
+
+    def test_abort_with_queued_datagram_then_writable(self):
+        # The queued datagram can be sent before connection_lost() runs;
+        # the protocol must not hear about it after abort().
+        self.assertEqual(
+            self._close_with_queued_datagram('abort', drain=True),
+            ['pause_writing', 'abort', ('connection_lost', None)])
+
+    def test_close_with_queued_datagram_then_writable(self):
+        # close() flushes the queue, so the protocol is resumed before
+        # connection_lost().
+        self.assertEqual(
+            self._close_with_queued_datagram('close', drain=True),
+            ['pause_writing', 'close', 'resume_writing',
+             ('connection_lost', None)])
+
     def test_create_datagram_1(self):
         server_addr = ('127.0.0.1', 8888)
         client_addr = ('127.0.0.1', 0)
