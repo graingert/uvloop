@@ -251,6 +251,15 @@ class _TestUDP:
 
                 self.assertIn(tmp_file2, pr.addrs)
 
+    def _fill_send_queue(self, tr):
+        # Send until the OS refuses a datagram and the transport has to
+        # queue it.
+        for _ in range(10000):
+            if tr.get_write_buffer_size():
+                return
+            tr.sendto(b'x' * 64)
+        self.fail('the OS never refused a datagram')
+
     def _close_with_queued_datagram(self, method, drain):
         # Close the transport while a datagram is queued (the OS refused
         # it with EAGAIN), optionally letting the peer make room for it
@@ -280,14 +289,17 @@ class _TestUDP:
 
         async def run(peer, path):
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+                # Keep the send buffer small (as anyio's tests do) so that
+                # macOS refuses datagrams with EAGAIN too.
+                sock.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
                 sock.connect(path)
                 sock.setblocking(False)
                 pr = Proto(self.loop)
                 tr, _ = await self.loop.create_datagram_endpoint(
                     lambda: pr, sock=sock)
 
-                while not tr.get_write_buffer_size():
-                    tr.sendto(b'x' * 64)
+                self._fill_send_queue(tr)
 
                 getattr(tr, method)()
                 pr.events.append(method)
@@ -454,13 +466,16 @@ class Test_UV_UDP(_TestUDP, tb.UVTestCase):
 
                 with socket.socket(
                         socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+                    # Keep the send buffer small (as anyio's tests do) so that
+                    # macOS refuses datagrams with EAGAIN too.
+                    sock.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
                     sock.connect(path)
                     sock.setblocking(False)
                     tr, _ = self.loop.run_until_complete(
                         self.loop.create_datagram_endpoint(Proto, sock=sock))
 
-                    while not tr.get_write_buffer_size():
-                        tr.sendto(b'x' * 64)
+                    self._fill_send_queue(tr)
 
                     with self.assertWarnsRegex(ResourceWarning, 'unclosed'):
                         self.loop.close()
