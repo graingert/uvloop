@@ -171,6 +171,14 @@ cdef class UDPTransport(UVBaseTransport):
         else:
             self.__receiving_stopped()
 
+    cdef _close(self):
+        try:
+            # Drop the reference held while receiving, even when the
+            # handle is closed directly (e.g. by loop.close()).
+            self._stop_reading()
+        finally:
+            UVSocketHandle._close(<UVHandle>self)
+
     cdef inline __receiving_started(self):
         if self.__receiving:
             return
