@@ -299,7 +299,6 @@ class _TestUDP:
                     pass
 
             await pr.done
-            await asyncio.sleep(0.1)
             return pr.events
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -431,6 +430,41 @@ class _TestUDP:
 
 
 class Test_UV_UDP(_TestUDP, tb.UVTestCase):
+
+    def test_loop_close_with_queued_datagram(self):
+        # Closing the loop closes the transport's handle directly, which
+        # cancels the queued datagram; that must not be reported to the
+        # protocol or the exception handler.
+        events = []
+
+        class Proto(asyncio.DatagramProtocol):
+            def connection_made(self, transport):
+                transport.set_write_buffer_limits(0)
+
+            def resume_writing(self):
+                events.append('resume_writing')
+
+            def error_received(self, exc):
+                events.append(('error_received', exc))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, 'peer.sock')
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as peer:
+                peer.bind(path)
+
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                sock.connect(path)
+                sock.setblocking(False)
+                tr, _ = self.loop.run_until_complete(
+                    self.loop.create_datagram_endpoint(Proto, sock=sock))
+
+                while not tr.get_write_buffer_size():
+                    tr.sendto(b'x' * 64)
+
+                with self.assertWarnsRegex(ResourceWarning, 'unclosed'):
+                    self.loop.close()
+
+        self.assertEqual(events, [])
 
     def test_create_datagram_endpoint_wrong_sock(self):
         sock = socket.socket(socket.AF_INET)
